@@ -28,10 +28,10 @@ class User(BaseModel):
 
 def get_auth_config(request: HTTPConnection) -> AuthConfig:
     auth_config: Optional[AuthConfig] = request.app.state.auth_config
-
     if auth_config is None:
         raise HTTPException(
-            status_code=HTTPStatus.UNAUTHORIZED, detail="No auth config"
+            status_code=HTTPStatus.UNAUTHORIZED,
+            detail="No auth config"
         )
     return auth_config
 
@@ -46,9 +46,7 @@ def get_audit_log(request: HTTPConnection) -> Optional[Callable[[str], None]]:
 AuditLogDep = Annotated[Optional[Callable[[str], None]], Depends(get_audit_log)]
 
 
-def get_authorized_user(
-    request: HTTPConnection,
-) -> User:
+def get_authorized_user(request: HTTPConnection) -> User:
     auth_config = get_auth_config(request)
 
     try:
@@ -61,23 +59,27 @@ def get_authorized_user(
 
         if user is not None:
             return user
+
         print("Request authentication returned no user")
+
     except Exception as e:
         print(f"Request authentication failed: {e}")
 
     if isinstance(request, WebSocket):
         raise WebSocketException(
-            code=status.WS_1008_POLICY_VIOLATION, reason="Not authenticated"
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Not authenticated"
         )
     else:
         raise HTTPException(
-            status_code=HTTPStatus.UNAUTHORIZED, detail="Not authenticated"
+            status_code=HTTPStatus.UNAUTHORIZED,
+            detail="Not authenticated"
         )
 
 
 @functools.cache
-def get_jwks_client(url: str):
-    """Reuse client cached by its url, client caches keys by default."""
+def get_jwks_client(url: str) -> PyJWKClient:
+    """Cache JWKS clients by URL to reuse signing keys."""
     return PyJWKClient(url, cache_keys=True)
 
 
@@ -88,14 +90,11 @@ def get_signing_key(url: str, token: str) -> tuple[str, str]:
     alg = signing_key.algorithm_name
     if alg != "RS256":
         raise ValueError(f"Unsupported signing algorithm: {alg}")
-    return (key, alg)
+    return key, alg
 
 
-def authorize_websocket(
-    request: WebSocket,
-    auth_config: AuthConfig,
-) -> Optional[User]:
-    # Parse Sec-Websocket-Protocol
+def authorize_websocket(request: WebSocket, auth_config: AuthConfig) -> Optional[User]:
+    # Extract token from Sec-Websocket-Protocol header
     header = "Sec-Websocket-Protocol"
     sep = ","
     prefix = "Authorization.Bearer."
@@ -111,42 +110,36 @@ def authorize_websocket(
             break
 
     if not token:
-        print(f"Missing bearer {prefix}.<token> in protocols")
+        print(f"Missing bearer token with prefix '{prefix}' in {header}")
         return None
 
     return authorize_token(token, auth_config)
 
 
-def authorize_request(
-    request: Request,
-    auth_config: AuthConfig,
-) -> Optional[User]:
+def authorize_request(request: Request, auth_config: AuthConfig) -> Optional[User]:
     auth_header = request.headers.get(auth_config.header)
     if not auth_header:
         print(f"Missing header '{auth_config.header}'")
         return None
 
-    token = auth_header.startswith("Bearer ") and auth_header[7:]
-    if not token:
-        print(f"Missing bearer token in '{auth_config.header}'")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    else:
+        print(f"Missing 'Bearer ' prefix in header '{auth_config.header}'")
         return None
 
     return authorize_token(token, auth_config)
 
 
-def authorize_token(
-    token: str,
-    auth_config: AuthConfig,
-) -> Optional[User]:
-    # Audience and jwks url to get signing key from based on the users config
+def authorize_token(token: str, auth_config: AuthConfig) -> Optional[User]:
     jwks_urls = [(auth_config.audience, auth_config.jwks_url)]
-
     payload = None
+
     for audience, jwks_url in jwks_urls:
         try:
             key, alg = get_signing_key(jwks_url, token)
         except Exception as e:
-            print(f"Failed to get signing key {e}")
+            print(f"Failed to get signing key: {e}")
             continue
 
         try:
@@ -156,14 +149,18 @@ def authorize_token(
                 algorithms=[alg],
                 audience=audience,
             )
+            break  # successfully decoded, no need to continue
         except jwt.PyJWTError as e:
-            print(f"Failed to decode and validate token {e}")
-            continue
+            print(f"Failed to decode and validate token: {e}")
+
+    if not payload:
+        print("No valid JWT payload found")
+        return None
 
     try:
         user = User.model_validate(payload)
         print(f"User {user.sub} authenticated")
         return user
     except Exception as e:
-        print(f"Failed to parse token payload {e}")
+        print(f"Failed to parse token payload: {e}")
         return None
