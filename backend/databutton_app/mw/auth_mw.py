@@ -1,6 +1,6 @@
 import functools
 from http import HTTPStatus
-from typing import Annotated, Callable, Optional
+from typing import Annotated, Callable, Optional, Tuple
 import jwt
 from fastapi import Depends, HTTPException, WebSocket, WebSocketException, status
 from fastapi.requests import HTTPConnection
@@ -16,10 +16,7 @@ class AuthConfig(BaseModel):
 
 
 class User(BaseModel):
-    # The subject, or user ID, from the authenticated token
     sub: str
-
-    # Optional extra user data
     user_id: Optional[str] = None
     name: Optional[str] = None
     picture: Optional[str] = None
@@ -28,7 +25,6 @@ class User(BaseModel):
 
 def get_auth_config(request: HTTPConnection) -> AuthConfig:
     auth_config: Optional[AuthConfig] = request.app.state.auth_config
-
     if auth_config is None:
         raise HTTPException(
             status_code=HTTPStatus.UNAUTHORIZED, detail="No auth config"
@@ -46,9 +42,7 @@ def get_audit_log(request: HTTPConnection) -> Optional[Callable[[str], None]]:
 AuditLogDep = Annotated[Optional[Callable[[str], None]], Depends(get_audit_log)]
 
 
-def get_authorized_user(
-    request: HTTPConnection,
-) -> User:
+def get_authorized_user(request: HTTPConnection) -> User:
     auth_config = get_auth_config(request)
 
     try:
@@ -77,37 +71,31 @@ def get_authorized_user(
 
 @functools.cache
 def get_jwks_client(url: str):
-    """Reuse client cached by its url, client caches keys by default."""
     return PyJWKClient(url, cache_keys=True)
 
 
-def get_signing_key(url: str, token: str) -> tuple[str, str]:
+def get_signing_key(url: str, token: str) -> Tuple[str, str]:
     client = get_jwks_client(url)
     signing_key = client.get_signing_key_from_jwt(token)
     key = signing_key.key
     alg = signing_key.algorithm_name
     if alg != "RS256":
         raise ValueError(f"Unsupported signing algorithm: {alg}")
-    return (key, alg)
+    return key, alg
 
 
-def authorize_websocket(
-    request: WebSocket,
-    auth_config: AuthConfig,
-) -> Optional[User]:
-    # Parse Sec-Websocket-Protocol
+def authorize_websocket(request: WebSocket, auth_config: AuthConfig) -> Optional[User]:
     header = "Sec-Websocket-Protocol"
-    sep = ","
     prefix = "Authorization.Bearer."
     protocols_header = request.headers.get(header)
     protocols = (
-        [h.strip() for h in protocols_header.split(sep)] if protocols_header else []
+        [h.strip() for h in protocols_header.split(",")] if protocols_header else []
     )
 
     token: Optional[str] = None
     for p in protocols:
         if p.startswith(prefix):
-            token = p.removeprefix(prefix)
+            token = p[len(prefix):]
             break
 
     if not token:
@@ -117,16 +105,13 @@ def authorize_websocket(
     return authorize_token(token, auth_config)
 
 
-def authorize_request(
-    request: Request,
-    auth_config: AuthConfig,
-) -> Optional[User]:
+def authorize_request(request: Request, auth_config: AuthConfig) -> Optional[User]:
     auth_header = request.headers.get(auth_config.header)
     if not auth_header:
         print(f"Missing header '{auth_config.header}'")
         return None
 
-    token = auth_header.startswith("Bearer ") and auth_header[7:]
+    token = auth_header[7:] if auth_header.startswith("Bearer ") else None
     if not token:
         print(f"Missing bearer token in '{auth_config.header}'")
         return None
@@ -134,14 +119,10 @@ def authorize_request(
     return authorize_token(token, auth_config)
 
 
-def authorize_token(
-    token: str,
-    auth_config: AuthConfig,
-) -> Optional[User]:
-    # Audience and jwks url to get signing key from based on the users config
+def authorize_token(token: str, auth_config: AuthConfig) -> Optional[User]:
     jwks_urls = [(auth_config.audience, auth_config.jwks_url)]
-
     payload = None
+
     for audience, jwks_url in jwks_urls:
         try:
             key, alg = get_signing_key(jwks_url, token)
@@ -156,9 +137,9 @@ def authorize_token(
                 algorithms=[alg],
                 audience=audience,
             )
+            break
         except jwt.PyJWTError as e:
             print(f"Failed to decode and validate token {e}")
-            continue
 
     try:
         user = User.model_validate(payload)
