@@ -1,6 +1,5 @@
 # Workspace version: 1.46.27
 uvicorn[standard]==0.34.2
-databutton==0.38.34
 fastapi==0.115.12
 ipykernel==6.29.5
 python-multipart==0.0.9
