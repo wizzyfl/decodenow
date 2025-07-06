@@ -35,11 +35,12 @@ def import_api_routers() -> APIRouter:
 
     src_path = pathlib.Path(__file__).parent
 
-    # Import API routers from "src/app/apis/*/__init__.py"
+    # Path to your APIs folder
     apis_path = src_path / "app" / "apis"
 
+    # Find all API modules with __init__.py (one level deep)
     api_names = [
-        p.relative_to(apis_path).parent.as_posix()
+        p.parent.name
         for p in apis_path.glob("*/__init__.py")
     ]
 
@@ -48,7 +49,7 @@ def import_api_routers() -> APIRouter:
     for name in api_names:
         print(f"Importing API: {name}")
         try:
-            api_module = __import__(api_module_prefix + name, fromlist=[name])
+            api_module = __import__(api_module_prefix + name, fromlist=["router"])
             api_router = getattr(api_module, "router", None)
             if isinstance(api_router, APIRouter):
                 routes.include_router(
@@ -59,11 +60,13 @@ def import_api_routers() -> APIRouter:
                         else [Depends(get_authorized_user)]
                     ),
                 )
+                print(f"Included router: {name}")
+            else:
+                print(f"No 'router' found in {name}")
         except Exception as e:
             print(f"Failed to import {name}: {e}")
-            continue
 
-    print(f"Registered routes: {routes.routes}")
+    print(f"Registered routes: {[route.path for route in routes.routes]}")
 
     return routes
 
@@ -83,19 +86,23 @@ def get_firebase_config() -> Optional[dict]:
 
 
 def create_app() -> FastAPI:
-    """Create the app. This is called by uvicorn with the factory option to construct the app object."""
     app = FastAPI()
+
+    # Include all API routers
     app.include_router(import_api_routers())
 
+    # Basic root endpoint for health check
     @app.get("/")
     def root():
         return {"status": "ok", "message": "API is running"}
 
+    # Log registered routes
     for route in app.routes:
         if hasattr(route, "methods"):
             for method in route.methods:
                 print(f"{method} {route.path}")
 
+    # Set up auth config from environment
     firebase_config = get_firebase_config()
 
     if firebase_config is None:
@@ -108,7 +115,6 @@ def create_app() -> FastAPI:
             "audience": firebase_config["projectId"],
             "header": "authorization",
         }
-
         app.state.auth_config = AuthConfig(**auth_config)
 
     return app
