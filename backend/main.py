@@ -2,6 +2,7 @@ import os
 import pathlib
 import json
 import dotenv
+from typing import Optional
 from fastapi import FastAPI, APIRouter, Depends
 
 dotenv.load_dotenv()
@@ -9,24 +10,28 @@ dotenv.load_dotenv()
 from databutton_app.mw.auth_mw import AuthConfig, get_authorized_user
 
 
-def get_router_config() -> dict:
+def get_router_config() -> Optional[dict]:
     try:
-        # Note: This file is not available to the agent
-        cfg = json.loads(open("routers.json").read())
-    except:
-        return False
+        cfg_path = pathlib.Path(__file__).parent / "routers.json"
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+    except Exception:
+        return None
     return cfg
 
 
 def is_auth_disabled(router_config: dict, name: str) -> bool:
-    return router_config["routers"][name]["disableAuth"]
+    try:
+        return router_config["routers"][name].get("disableAuth", False)
+    except KeyError:
+        return False
 
 
 def import_api_routers() -> APIRouter:
     """Create top level router including all user defined endpoints."""
     routes = APIRouter(prefix="/routes")
 
-    router_config = get_router_config()
+    router_config = get_router_config() or {}
 
     src_path = pathlib.Path(__file__).parent
 
@@ -55,21 +60,24 @@ def import_api_routers() -> APIRouter:
                     ),
                 )
         except Exception as e:
-            print(e)
+            print(f"Failed to import {name}: {e}")
             continue
 
-    print(routes.routes)
+    print(f"Registered routes: {routes.routes}")
 
     return routes
 
 
-def get_firebase_config() -> dict | None:
+def get_firebase_config() -> Optional[dict]:
     extensions = os.environ.get("DATABUTTON_EXTENSIONS", "[]")
-    extensions = json.loads(extensions)
+    try:
+        extensions = json.loads(extensions)
+    except json.JSONDecodeError:
+        extensions = []
 
     for ext in extensions:
-        if ext["name"] == "firebase-auth":
-            return ext["config"]["firebaseConfig"]
+        if ext.get("name") == "firebase-auth":
+            return ext.get("config", {}).get("firebaseConfig")
 
     return None
 
@@ -78,6 +86,10 @@ def create_app() -> FastAPI:
     """Create the app. This is called by uvicorn with the factory option to construct the app object."""
     app = FastAPI()
     app.include_router(import_api_routers())
+
+    @app.get("/")
+    def root():
+        return {"status": "ok", "message": "API is running"}
 
     for route in app.routes:
         if hasattr(route, "methods"):
