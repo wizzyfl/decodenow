@@ -1,6 +1,6 @@
 import functools
 from http import HTTPStatus
-from typing import Annotated, Callable
+from typing import Annotated, Callable, Optional
 import jwt
 from fastapi import Depends, HTTPException, WebSocket, WebSocketException, status
 from fastapi.requests import HTTPConnection
@@ -20,14 +20,14 @@ class User(BaseModel):
     sub: str
 
     # Optional extra user data
-    user_id: str | None = None
-    name: str | None = None
-    picture: str | None = None
-    email: str | None = None
+    user_id: Optional[str] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    email: Optional[str] = None
 
 
 def get_auth_config(request: HTTPConnection) -> AuthConfig:
-    auth_config: AuthConfig | None = request.app.state.auth_config
+    auth_config: Optional[AuthConfig] = request.app.state.auth_config
 
     if auth_config is None:
         raise HTTPException(
@@ -39,11 +39,11 @@ def get_auth_config(request: HTTPConnection) -> AuthConfig:
 AuthConfigDep = Annotated[AuthConfig, Depends(get_auth_config)]
 
 
-def get_audit_log(request: HTTPConnection) -> Callable[[str], None] | None:
+def get_audit_log(request: HTTPConnection) -> Optional[Callable[[str], None]]:
     return getattr(request.app.state.databutton_app_state, "audit_log", None)
 
 
-AuditLogDep = Annotated[Callable[[str], None] | None, Depends(get_audit_log)]
+AuditLogDep = Annotated[Optional[Callable[[str], None]], Depends(get_audit_log)]
 
 
 def get_authorized_user(
@@ -94,7 +94,7 @@ def get_signing_key(url: str, token: str) -> tuple[str, str]:
 def authorize_websocket(
     request: WebSocket,
     auth_config: AuthConfig,
-) -> User | None:
+) -> Optional[User]:
     # Parse Sec-Websocket-Protocol
     header = "Sec-Websocket-Protocol"
     sep = ","
@@ -104,7 +104,7 @@ def authorize_websocket(
         [h.strip() for h in protocols_header.split(sep)] if protocols_header else []
     )
 
-    token: str | None = None
+    token: Optional[str] = None
     for p in protocols:
         if p.startswith(prefix):
             token = p.removeprefix(prefix)
@@ -120,7 +120,7 @@ def authorize_websocket(
 def authorize_request(
     request: Request,
     auth_config: AuthConfig,
-) -> User | None:
+) -> Optional[User]:
     auth_header = request.headers.get(auth_config.header)
     if not auth_header:
         print(f"Missing header '{auth_config.header}'")
@@ -137,7 +137,7 @@ def authorize_request(
 def authorize_token(
     token: str,
     auth_config: AuthConfig,
-) -> User | None:
+) -> Optional[User]:
     # Audience and jwks url to get signing key from based on the users config
     jwks_urls = [(auth_config.audience, auth_config.jwks_url)]
 
